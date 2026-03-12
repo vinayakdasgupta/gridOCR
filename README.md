@@ -4,7 +4,7 @@
 
 It splits double-page spreads, detects text regions with OpenCV, runs Tesseract OCR, and lets you correct regions manually before exporting clean plain text.
 
-![gridOCR interface](screenshot.png)
+![gridOCR interface](docs/screenshot.png)
 <!-- Replace with an actual screenshot -->
 
 ---
