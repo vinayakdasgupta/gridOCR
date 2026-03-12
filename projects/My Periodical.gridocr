@@ -1,0 +1,130 @@
+{
+  "id": "ja7u8mb1",
+  "name": "My Periodical",
+  "baseDir": "C:\\Users\\Vinayak\\Documents\\gridOCR",
+  "outputDir": "C:\\Users\\Vinayak\\Documents\\gridOCR/data/My Periodical",
+  "volumes": [
+    {
+      "id": "y07vc8tp",
+      "name": "Volume 1",
+      "spreads": [
+        {
+          "id": "ovbn1trj",
+          "originalPath": "C:\\Users\\Vinayak\\AppData\\Local\\Temp\\gridocr_4d7zvdcf\\test.PNG",
+          "leftPath": "C:\\Users\\Vinayak\\Documents\\gridOCR/data/My Periodical/y07vc8tp/1iga9rh0\\test_left.jpg",
+          "rightPath": "C:\\Users\\Vinayak\\Documents\\gridOCR/data/My Periodical/y07vc8tp/1iga9rh0\\test_right.jpg",
+          "spineX": 564,
+          "splitMethod": "detected",
+          "imageW": 1203,
+          "imageH": 805,
+          "pages": {
+            "left": {
+              "segments": [
+                {
+                  "confidence": 0.88,
+                  "h": 0.050340136054421766,
+                  "id": "a3f3ff99",
+                  "source": "detected",
+                  "type": "header",
+                  "w": 0.5810344827586207,
+                  "x": 0.18046034482758622,
+                  "y": 0.0072759183673469395
+                },
+                {
+                  "confidence": 0.8,
+                  "h": 0.908843537414966,
+                  "id": "e6ec9969",
+                  "source": "detected",
+                  "type": "body",
+                  "w": 0.7362068965517241,
+                  "x": 0.09661206896551723,
+                  "y": 0.06086952380952381
+                },
+                {
+                  "id": "x7xo9401",
+                  "type": "pagenum",
+                  "x": 0.0853448275862069,
+                  "y": 0.014965986394557823,
+                  "w": 0.08620689655172414,
+                  "h": 0.04353741496598639,
+                  "confidence": 1,
+                  "source": "manual"
+                }
+              ],
+              "ocrResults": {
+                "a3f3ff99": {
+                  "confidence": 0.927,
+                  "text": "SUPERSTITIONS OF THE HIGHLANDERS.",
+                  "word_count": 4
+                },
+                "e6ec9969": {
+                  "confidence": 0.886,
+                  "text": "ea, patched-up tin jugs, and highly polished horn spoons, om the Batt of the Lewis to the Sound of Mull. We have hinted, that the person alluded to, was of the eques- ian order, and we shall endeavour to set forth his legitimate aims to that distinction, although they may be doubted uth of Lochaber, ‘Mr. Abraham Findlatter was mounted upon an individual that genus of the “Equus Caballus” called in the Highlands earran; an animal of small stature, and of the colour of ty iron rust; and exhibiting a hairiness, a shagginess, and | indomitability of gesture, that showed him to be but little quainted with the luxuries or the restraints of the atable. No ironin mouth or on hoof had he. On the contrary, his neat and independent jawa were at perfect liberty (of which not nnfrequently availed himself), to graze, or more pro- rly speaking to browse, as he went along. Mis lead was se red by the éaod, or genuine Highland bridle, being a halter horse hair, secured over the animal's nose and head in such manner, that should he ehoose to run away, or rush dog- dly on a forbidden point, an adroit slip might at once con rt the halter inte ite more usual and legitimate purpose. Of s, however, there was but little danger on the present occa- n, as the creature proceeded at a pace sober even to slug- hness; although much entreated to a greater velocity of station, by the application of an ash stick, wielded by the ht band of his rider, and in the heert of which, there was ncealed a long murderous small sword, innocent hitherto of od, The animal’a hoofs were in a state of luxuriant nature; ving, at what we may be permitted to call the toes, a carl wards, as if proudly conscious that they trod their native",
+                  "word_count": 313
+                },
+                "x7xo9401": {
+                  "confidence": 0,
+                  "text": "",
+                  "word_count": 0
+                }
+              },
+              "confirmed": false
+            },
+            "right": {
+              "segments": [
+                {
+                  "confidence": 0.82,
+                  "h": 0.040993788819875775,
+                  "id": "472f24cd",
+                  "source": "detected",
+                  "type": "pagenum",
+                  "w": 0.12363067292644757,
+                  "x": 0.8341158059467919,
+                  "y": 0.02111801242236025
+                },
+                {
+                  "confidence": 0.88,
+                  "h": 0.03850931677018633,
+                  "id": "ffd2025a",
+                  "source": "detected",
+                  "type": "header",
+                  "w": 0.5117370892018779,
+                  "x": 0.3270735524256651,
+                  "y": 0.02608695652173913
+                },
+                {
+                  "confidence": 0.8,
+                  "h": 0.8604651162790697,
+                  "id": "ea558610",
+                  "source": "detected",
+                  "type": "body",
+                  "w": 0.7758620689655172,
+                  "x": 0.17370862068965517,
+                  "y": 0.06956525307797538
+                }
+              ],
+              "ocrResults": {
+                "472f24cd": {
+                  "confidence": 0.29,
+                  "text": "8",
+                  "word_count": 1
+                },
+                "ea558610": {
+                  "confidence": 0.8,
+                  "text": "heath, and sould never tread any ather, The rest of the __ Ephippia corresponded with the bridle, Saddleg at that time vere rare aves in the Western Highlands, save among the gentry, so that in fact they were considered as veritable marks of Duin-sas-atisne, or gentility, as along coat, boots, round het, anda watch, Over the animal's back was thrown a housing of straw mat; and upon this was fixed a wooden pack-saddle, called sfraer, which had two horns, if we may so call them, ‘This s¢raer was fixed down by girtha of straw zope, and was prevented from going too much forward on the animel’s shoulders by.an equally happy and antique kind of a cxupper; consisting of a stick like a square sail-yard passing under his tail, and properly braced at each extremity to the atraer. + He that sat upon this. gearran was a tall looking persor nage--of about thirty, of a very fair complexion, and with eyebrow, atid hair, and tro minute tufts of whiskers of the aémé oolour, He- was a liltle freckled, with a somewhat cacked'up nosey giving t bis countenance an expression al- together of sclemn primness and spruce importance. His head was encased in a hat with a rather peaked crown and parcow brim ; the rim of which bent up behind, from coming in contact with the sturdy collar of a voluminous drab great coat, which rather. preposterously,considering the heat of the day, he wore over 4 cost.of bottle-green broad cloth, which in. the Hebrides would be pronounced fine. It had roung akirts, and was garnished with silver gilt buttons in shape and size like young mushrooms, which were then the tip top, of, the, fashion: Under this was a attiped yellow waist- cont; of a longitude that would in the present day be quite",
+                  "word_count": 303
+                },
+                "ffd2025a": {
+                  "confidence": 0.91,
+                  "text": "SUPERSTITIONS OF THE HIGHLANDERS.",
+                  "word_count": 4
+                }
+              },
+              "confirmed": false
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

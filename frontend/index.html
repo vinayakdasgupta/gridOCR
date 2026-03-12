@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gridOCR</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&family=Noto+Sans+Bengali:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">grid<span>OCR</span></div>
+
+  <div class="toolbar-group">
+    <button class="tbtn" id="btnNewProject" title="New Project">+ Project</button>
+    <button class="tbtn primary" id="btnImport" title="Import spread images">↑ Import Spreads</button>
+    <button class="tbtn" id="btnSaveProject" title="Save project">💾 Save</button>
+    <button class="tbtn" id="btnLoadProject" title="Load project">📂 Load</button>
+    <button class="tbtn" id="btnDetectSettings" title="Detection settings" onclick="toggleDetectSettings()">⚙ Settings</button>
+  </div>
+
+  <div class="type-group">
+    <button class="type-btn active" data-type="body">
+      <span class="tdot" style="background:#3d5a6b"></span>Body
+    </button>
+    <button class="type-btn" data-type="header">
+      <span class="tdot" style="background:#c4922a"></span>Header
+    </button>
+    <button class="type-btn" data-type="pagenum">
+      <span class="tdot" style="background:#8b3a1a"></span>Pg No.
+    </button>
+    <button class="type-btn" data-type="footnote">
+      <span class="tdot" style="background:#6b4a7a"></span>Footnote
+    </button>
+  </div>
+
+  <div class="toolbar-group">
+    <button class="tbtn" id="btnRedetect"       title="Re-run OpenCV detection on current spread">⟳ Redetect</button>
+  </div>
+
+  <div class="toolbar-group">
+    <button class="tbtn accent" id="btnRunOcr" title="Run Tesseract OCR on all segments">▶ OCR</button>
+  </div>
+</header>
+
+<!-- ── WORKSPACE ──────────────────────────────────────────────────────── -->
+<div class="workspace">
+
+  <!-- Left sidebar: spread list -->
+  <div class="sidebar">
+    <div class="sidebar-head">
+      <span id="volumeName" class="vol-name">No volume</span>
+      <span id="spreadCount" class="meta-count">0 spreads</span>
+    </div>
+    <div class="spread-list" id="spreadList">
+      <div class="empty-state">Import spreads<br>to begin</div>
+    </div>
+  </div>
+
+  <!-- Canvas: left and right pages side by side -->
+  <div class="canvas-area" id="canvasArea">
+
+    <div class="page-wrap" id="wrapLeft">
+      <div class="page-label">◀ LEFT (verso)</div>
+      <div class="page-inner">
+        <div id="pageEmptyLeft" class="page-empty-state">
+          <svg viewBox="0 0 60 80" xmlns="http://www.w3.org/2000/svg" width="60" height="80">
+            <rect x="4" y="4" width="52" height="72" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.3"/>
+            <line x1="12" y1="22" x2="48" y2="22" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="30" x2="48" y2="30" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="38" x2="38" y2="38" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="50" x2="48" y2="50" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="58" x2="48" y2="58" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="66" x2="32" y2="66" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+          </svg>
+          <span>no page loaded</span>
+        </div>
+        <img id="pageImgLeft" class="page-img" src="" alt="" draggable="false" style="display:none">
+        <div class="seg-layer" id="segLayerLeft"></div>
+      </div>
+    </div>
+
+    <div class="spine-indicator" title="Detected spine"></div>
+
+    <div class="page-wrap" id="wrapRight">
+      <div class="page-label">RIGHT (recto) ▶</div>
+      <div class="page-inner">
+        <div id="pageEmptyRight" class="page-empty-state">
+          <svg viewBox="0 0 60 80" xmlns="http://www.w3.org/2000/svg" width="60" height="80">
+            <rect x="4" y="4" width="52" height="72" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.3"/>
+            <line x1="12" y1="22" x2="48" y2="22" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="30" x2="48" y2="30" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="38" x2="38" y2="38" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="50" x2="48" y2="50" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="58" x2="48" y2="58" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+            <line x1="12" y1="66" x2="32" y2="66" stroke="currentColor" stroke-width="1" opacity="0.2"/>
+          </svg>
+          <span>no page loaded</span>
+        </div>
+        <img id="pageImgRight" class="page-img" src="" alt="" draggable="false" style="display:none">
+        <div class="seg-layer" id="segLayerRight"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right panel: segments / OCR / compiled -->
+  <div class="right-panel">
+    <div class="panel-tabs">
+      <button class="tab-btn active" data-tab="segments">Regions</button>
+      <button class="tab-btn"        data-tab="ocr">OCR</button>
+      <button class="tab-btn"        data-tab="compiled">Output</button>
+    </div>
+
+    <div class="tab-content active" id="tab-segments">
+      <div id="segmentListInner">
+        <div class="empty-state">Select a spread<br>to see regions</div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-ocr">
+      <div id="ocrPanel">
+        <div class="empty-state">Run OCR to see<br>extracted text</div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-compiled">
+      <div class="export-bar">
+        <span class="export-label">Export as:</span>
+        <button class="export-btn" onclick="exportTxt()">Plain TXT</button>
+      </div>
+      <div id="compiledPanel">
+        <div class="empty-state">Compile a page<br>to see output</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── STATUS BAR ─────────────────────────────────────────────────────── -->
+<div class="statusbar">
+  <span><span class="status-dot idle" id="statusDot"></span><span id="statusText">Starting…</span></span>
+  <span id="segCount">0 regions</span>
+  <span id="projectName">No project</span>
+</div>
+
+<!-- Detection settings panel -->
+<div id="detectSettingsPanel" class="settings-panel" style="display:none">
+  <div class="settings-title">Auto-detection settings</div>
+  <div class="settings-body">
+    <label class="setting-row"><input type="checkbox" id="detectBody"      checked> <span class="tdot" style="background:#3d5a6b"></span> Body text</label>
+    <label class="setting-row"><input type="checkbox" id="detectHeader"    checked> <span class="tdot" style="background:#c4922a"></span> Running header</label>
+    <label class="setting-row"><input type="checkbox" id="detectPagenum"   checked> <span class="tdot" style="background:#8b3a1a"></span> Page numbers</label>
+    <label class="setting-row"><input type="checkbox" id="detectFootnote"  checked> <span class="tdot" style="background:#6b4a7a"></span> Footnotes</label>
+    <label class="setting-row"><input type="checkbox" id="preserveLineBreaks" checked> <span class="tdot" style="background:#3d5a6b"></span> Preserve line breaks in OCR output</label>
+  </div>
+  <div class="settings-divider"></div>
+  <div class="setting-row setting-row--select">
+    <label for="ocrLanguage">OCR language</label>
+    <select id="ocrLanguage" class="ocr-select">
+      <optgroup label="tessdata_best (LSTM)">
+        <option value="eng" selected>English (eng)</option>
+        <option value="ben">Bengali (ben)</option>
+      </optgroup>
+      <optgroup label="tessdata (standard)">
+        <option value="hin">Hindi (hin)</option>
+        <option value="san">Sanskrit (san)</option>
+        <option value="fra">French (fra)</option>
+        <option value="deu">German (deu)</option>
+        <option value="lat">Latin (lat)</option>
+      </optgroup>
+    </select>
+  </div>
+  <div class="settings-note">Unchecked region types are filtered after detection but can be drawn manually. Make sure the matching Tesseract language pack is installed.</div>
+</div>
+
+<script src="app.js"></script>
+<script src="exporters/txt.js"></script>
+</body>
+</html>
