@@ -34,6 +34,8 @@ function getDetectSettings() {
         preserveNewlines:    preserveLineBreaks,
         preserveLineBreaks,
         ocrLanguage:         document.getElementById('ocrLanguage')?.value     || 'eng',
+        ocrModel:            document.getElementById('ocrModel')?.value          || 'best',
+        useBest:             (document.getElementById('ocrModel')?.value || 'best') === 'best',
     };
 }
 
@@ -573,6 +575,7 @@ async function runOCR() {
       image_path:         imgPath,
       regions:            page.segments,
       language:           settings.ocrLanguage,
+      use_best:           settings.useBest,
       preserve_newlines:  settings.preserveLineBreaks,
     });
 
@@ -845,15 +848,51 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.spread) { renderSegments('left'); renderSegments('right'); }
   });
 
-  // Ping sidecar
+
+// ── Language selector ──────────────────────────────────────────────────────
+async function populateLanguages() {
+  const sel      = document.getElementById('ocrLanguage');
+  const modelSel = document.getElementById('ocrModel');
+  if (!sel) return;
+  const useBest = (modelSel?.value || 'best') === 'best';
+  try {
+    const r = await sidecar('get_languages');
+    if (!r.ok) return;
+    const langs = useBest
+      ? (r.languages.tessdata_best || [])
+      : (r.languages.tessdata     || []);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (!langs.length) {
+      sel.innerHTML = '<option value="eng">eng</option>';
+      return;
+    }
+    langs.forEach(code => {
+      const opt = document.createElement('option');
+      opt.value       = code;
+      opt.textContent = code;
+      if (code === prev || code === 'eng') opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (!sel.value) sel.value = langs[0];
+  } catch(e) {
+    console.warn('Could not load language list:', e);
+  }
+}
+
+  // Ping sidecar then populate languages
   (async () => {
     try {
       const r = await sidecar('ping');
       setStatus(`Ready (v${r.version})`, 'idle');
+      await populateLanguages();
     } catch(e) {
       setStatus('Server not available — is app.py running?', 'error');
     }
   })();
+
+  // Repopulate when model changes
+  document.getElementById('ocrModel')?.addEventListener('change', populateLanguages);
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -866,5 +905,3 @@ function avgConfidence(spread) {
   if (!all.length) return 0;
   return all.reduce((s, r) => s + (r.confidence||0), 0) / all.length;
 }
-
-

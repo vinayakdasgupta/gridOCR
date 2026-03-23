@@ -158,22 +158,19 @@
   </div>
   <div class="settings-divider"></div>
   <div class="setting-row setting-row--select">
-    <label for="ocrLanguage">OCR language</label>
-    <select id="ocrLanguage" class="ocr-select">
-      <optgroup label="tessdata_best (LSTM)">
-        <option value="eng" selected>English (eng)</option>
-        <option value="ben">Bengali (ben)</option>
-      </optgroup>
-      <optgroup label="tessdata (standard)">
-        <option value="hin">Hindi (hin)</option>
-        <option value="san">Sanskrit (san)</option>
-        <option value="fra">French (fra)</option>
-        <option value="deu">German (deu)</option>
-        <option value="lat">Latin (lat)</option>
-      </optgroup>
+    <label for="ocrModel">Model</label>
+    <select id="ocrModel" class="ocr-select">
+      <option value="best" selected>tessdata_best (LSTM)</option>
+      <option value="standard">tessdata (standard)</option>
     </select>
   </div>
-  <div class="settings-note">Unchecked region types are filtered after detection but can be drawn manually. Make sure the matching Tesseract language pack is installed.</div>
+  <div class="setting-row setting-row--select">
+    <label for="ocrLanguage">Language</label>
+    <select id="ocrLanguage" class="ocr-select">
+      <option value="eng" selected>eng</option>
+    </select>
+  </div>
+  <div class="settings-note">Unchecked region types are filtered after detection but can be drawn manually. Languages are loaded from your installed Tesseract models.</div>
 </div>
 
 <script src="app.js"></script>

@@ -277,6 +277,23 @@ header {
   white-space: nowrap;
 }
 .seg-conf { opacity: 0.7; font-size: 0.55rem; }
+.seg-order {
+  background: rgba(0,0,0,0.35);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  min-width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.seg-col {
+  background: rgba(255,255,255,0.20);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 0.55rem;
+  flex-shrink: 0;
+}
 .seg-del {
   background: none; border: none;
   color: #fff; opacity: 0.6;

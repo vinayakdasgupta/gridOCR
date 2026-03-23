@@ -84,11 +84,43 @@ TESSDATA_BEST = _find_tessdata_best()
 
 
 
-def _build_configs(language: str) -> dict:
+from pathlib import Path as _Path
+
+def _langs_in_dir(tessdata_dir: str) -> list:
+    """Return language codes available in a tessdata directory."""
+    try:
+        return sorted([
+            p.stem for p in _Path(tessdata_dir).glob('*.traineddata')
+            if p.stem not in ('osd', 'equ')
+        ])
+    except Exception:
+        return []
+
+
+def get_available_languages() -> dict:
+    """Return {'tessdata_best': [...], 'tessdata': [...]} of installed language codes."""
+    result = {}
+    if TESSDATA_BEST:
+        result['tessdata_best'] = _langs_in_dir(TESSDATA_BEST)
+    orig = os.environ.get('TESSDATA_PREFIX')
+    if orig:
+        del os.environ['TESSDATA_PREFIX']
+    try:
+        std = pytesseract.get_languages(config='')
+        result['tessdata'] = sorted(l for l in std if l not in ('osd', 'equ'))
+    except Exception:
+        result['tessdata'] = []
+    finally:
+        if orig:
+            os.environ['TESSDATA_PREFIX'] = orig
+    return result
+
+
+def _build_configs(language: str, use_best: bool = True) -> dict:
     """
     Build Tesseract config strings for each region type.
-    Uses tessdata_best + --oem 1 (LSTM only) when the best models are found;
-    falls back to default tessdata + --oem 3 otherwise.
+    use_best=True  → tessdata_best + --oem 1 (pure LSTM)
+    use_best=False → standard tessdata + --oem 1 (all installed models are LSTM)
     The digit whitelist on pagenum is Latin-script only — dropped for scripts
     with their own numeral glyphs (Bengali, Devanagari, etc.)
     """
@@ -96,13 +128,11 @@ def _build_configs(language: str) -> dict:
     use_latin_whitelist = language in LATIN_SCRIPT_LANGS
     l = language
 
-    # tessdata_best models require --oem 1 (pure LSTM only).
-    # We set TESSDATA_PREFIX as an environment variable rather than using
-    # --tessdata-dir in the config string — avoids quoting issues with
-    # paths containing spaces (e.g. C:\Program Files\...).
-    oem = 1
-    if TESSDATA_BEST:
+    if use_best and TESSDATA_BEST:
         os.environ['TESSDATA_PREFIX'] = TESSDATA_BEST
+    else:
+        os.environ.pop('TESSDATA_PREFIX', None)
+    oem = 1
     base = f'--oem {oem}'
     pagenum_config = (
         f"{base} --psm 6 -l {l} -c tessedit_char_whitelist=0123456789IVXivxLCDlcd.,- "
@@ -129,13 +159,13 @@ class OCREngine:
     SCALE_SMALL   = 2.0   # regions < 200px tall
     SCALE_NORMAL  = 1.5   # everything else — slight upscale always helps
 
-    def run(self, image_path: str, regions: List[dict], language: str = 'eng', preserve_newlines: bool = True) -> dict:
+    def run(self, image_path: str, regions: List[dict], language: str = 'eng', preserve_newlines: bool = True, use_best: bool = True) -> dict:
         img = cv2.imread(image_path)
         if img is None:
             raise ValueError(f"Cannot read: {image_path}")
         h, w = img.shape[:2]
         results = {}
-        type_config = _build_configs(language)
+        type_config = _build_configs(language, use_best=use_best)
 
 
 

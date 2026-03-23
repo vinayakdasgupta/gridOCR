@@ -78,14 +78,21 @@ def handle(msg: dict) -> dict:
         )
         return {"ok": True, "regions": regions}
 
+    # ── GET AVAILABLE LANGUAGES ──────────────────────────
+    elif action == "get_languages":
+        from ocr import get_available_languages
+        return {"ok": True, "languages": get_available_languages()}
+
     # ── RUN OCR ───────────────────────────────────────────
     elif action == "run_ocr":
         image_path        = msg["image_path"]
         regions           = msg["regions"]
         language          = msg.get("language", "eng")
         preserve_newlines = msg.get("preserve_newlines", True)
+        use_best          = msg.get("use_best", True)
         results = ocr.run(image_path, regions, language=language,
-                          preserve_newlines=preserve_newlines)
+                          preserve_newlines=preserve_newlines,
+                          use_best=use_best)
         return {"ok": True, "results": results}
 
     # ── COMPILE OUTPUT ────────────────────────────────────
