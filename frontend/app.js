@@ -9,14 +9,21 @@
 // ── HTTP API ───────────────────────────────────────────────────────────────
 const API = "http://localhost:5000";
 
-async function sidecar(action, params = {}) {
-    const res = await fetch(`${API}/api/sidecar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...params }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+async function sidecar(action, params = {}, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`${API}/api/sidecar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, ...params }),
+            signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 
@@ -34,9 +41,37 @@ function getDetectSettings() {
         preserveNewlines:    preserveLineBreaks,
         preserveLineBreaks,
         ocrLanguage:         document.getElementById('ocrLanguage')?.value     || 'eng',
-        ocrModel:            document.getElementById('ocrModel')?.value          || 'best',
+        ocrModel:            document.getElementById('ocrModel')?.value        || 'best',
         useBest:             (document.getElementById('ocrModel')?.value || 'best') === 'best',
     };
+}
+
+// Remove regions substantially contained within another region.
+// A region is "inside" another if >80% of its area overlaps with the larger one.
+function filterContainedRegions(regions) {
+  const out = [];
+  for (let i = 0; i < regions.length; i++) {
+    const a = regions[i];
+    let contained = false;
+    for (let j = 0; j < regions.length; j++) {
+      if (i === j) continue;
+      const b = regions[j];
+      // Check if a is inside b
+      const ix1 = Math.max(a.x, b.x);
+      const iy1 = Math.max(a.y, b.y);
+      const ix2 = Math.min(a.x + a.w, b.x + b.w);
+      const iy2 = Math.min(a.y + a.h, b.y + b.h);
+      if (ix2 <= ix1 || iy2 <= iy1) continue;
+      const interArea = (ix2 - ix1) * (iy2 - iy1);
+      const aArea     = a.w * a.h;
+      if (aArea > 0 && interArea / aArea > 0.80) {
+        // a is mostly inside b — keep whichever is larger
+        if (aArea < b.w * b.h) { contained = true; break; }
+      }
+    }
+    if (!contained) out.push(a);
+  }
+  return out;
 }
 
 function filterRegionsBySettings(regions) {
@@ -128,10 +163,9 @@ function pickImageFiles() {
         const input = document.createElement('input');
         input.type = 'file';
         input.multiple = true;
-        input.accept = 'image/jpeg,image/png,image/tiff,.jpg,.jpeg,.png,.tif,.tiff';
+        input.accept = 'image/jpeg,image/png,image/tiff,.jpg,.jpeg,.png,.tif,.tiff,application/pdf,.pdf';
         input.onchange = async () => {
             if (!input.files.length) { resolve([]); return; }
-            // Upload files to server and get back temp paths
             const formData = new FormData();
             for (const file of input.files) formData.append('files', file);
             const res  = await fetch(`${API}/api/upload`, { method: 'POST', body: formData });
@@ -180,7 +214,6 @@ const dom = {
   ocrPanel:       document.getElementById('ocrPanel'),
   compiledPanel:  document.getElementById('compiledPanel'),
   volumeName:     document.getElementById('volumeName'),
-  confidenceBar:  document.getElementById('confidenceBar'),
 };
 
 // ── Status ─────────────────────────────────────────────────────────────────
@@ -206,54 +239,83 @@ async function newProject() {
 
 async function importSpreads() {
   if (!state.project) { alert('Create a project first.'); return; }
-  // Auto-create a default volume if none exists
   if (!state.volume) {
     const vol = { id: uid(), name: 'Volume 1', spreads: [] };
     state.project.volumes.push(vol);
     state.volume = vol;
     dom.volumeName.textContent = vol.name;
   }
-  // Use browser file picker
+
   const paths = await pickImageFiles();
   if (!paths || paths.length === 0) return;
 
-  setStatus(`Importing ${paths.length} spread(s)…`, 'busy');
+  const pdfs   = paths.filter(p => p.toLowerCase().endsWith('.pdf'));
+  const images = paths.filter(p => !p.toLowerCase().endsWith('.pdf'));
 
-  for (const imgPath of paths) {
-    const outDir = `tmp/${state.volume.id}/${uid()}`;
-    const splitResult = await sidecar('split_spread', { image_path: imgPath, out_dir: outDir });
+  // ── Convert PDFs page-by-page with progress ──────────────────────────
+  const allImagePaths = [...images];
+  for (const pdfPath of pdfs) {
+    const pdfName = pdfPath.split(/[\/]/).pop();
 
-    if (!splitResult.ok) {
-      console.error('Split error:', splitResult.error);
-      continue;
+    // Start job — opens PDF, returns page count immediately
+    const jobRes = await sidecar('pdf_start_job', { pdf_path: pdfPath, dpi: 200 }, 30000);
+    if (!jobRes.ok) { setStatus(`PDF error: ${jobRes.error}`, 'idle'); continue; }
+
+    const { job_id, page_count } = jobRes;
+    showProgressBar(`Converting ${pdfName}`, 0, page_count);
+
+    // Convert one page per sidecar call — each call is fast (< 2s)
+    let pagePaths = [];
+    for (let p = 0; p < page_count; p++) {
+      const pageRes = await sidecar('pdf_next_page', { job_id }, 30000);
+      if (!pageRes.ok) { setStatus(`PDF page error: ${pageRes.error}`, 'idle'); break; }
+      updateProgressBar(pageRes.page_index, page_count,
+        `Converting ${pdfName}: ${pageRes.page_index} / ${page_count}`);
+      if (pageRes.done) { pagePaths = pageRes.paths || []; break; }
     }
+    hideProgressBar();
+    allImagePaths.push(...pagePaths);
+    setStatus(`PDF: ${pagePaths.length} pages from ${pdfName}`, 'idle');
+  }
 
-    const spread = {
+  if (allImagePaths.length === 0) return;
+
+  // ── Import each page image through split_spread ───────────────────────
+  let imported = 0;
+  showProgressBar('Importing pages', 0, allImagePaths.length);
+  for (const imgPath of allImagePaths) {
+    const splitResult = await sidecar('split_spread',
+      { image_path: imgPath, out_dir: `tmp/${state.volume.id}_${uid()}` });
+    if (!splitResult.ok) { console.error('Split error:', splitResult.error); continue; }
+
+    state.volume.spreads.push({
       id: uid(),
       originalPath: imgPath,
-      leftPath:  splitResult.left_path,
-      rightPath: splitResult.right_path,
-      spineX:    splitResult.spine_x,
-      splitMethod: splitResult.method,
-      imageW:    splitResult.image_w,
-      imageH:    splitResult.image_h,
+      leftPath:     splitResult.left_path,
+      rightPath:    splitResult.right_path,
+      spineX:       splitResult.spine_x,
+      splitMethod:  splitResult.method,
+      imageW:       splitResult.image_w,
+      imageH:       splitResult.image_h,
+      isSingle:     splitResult.is_single || false,
       detectionRun: false,
       pages: {
         left:  { segments: [], ocrResults: {}, confirmed: false },
         right: { segments: [], ocrResults: {}, confirmed: false },
       }
-    };
-    state.volume.spreads.push(spread);
+    });
+    imported++;
+    updateProgressBar(imported, allImagePaths.length, `Importing: ${imported} / ${allImagePaths.length}`);
+    if (imported % 5 === 0 || imported === allImagePaths.length) {
+      renderSpreadList(); updateCounts();
+    }
   }
 
-  renderSpreadList();
-  setStatus(`Imported ${paths.length} spread(s)`, 'idle');
-  updateCounts();
-
-  // Auto-select first
-  if (state.volume.spreads.length > 0 && !state.spread) {
-    selectSpread(state.volume.spreads[0]);
-  }
+  hideProgressBar();
+  renderSpreadList(); updateCounts();
+  setStatus(`Imported ${imported} page(s)`, 'idle');
+  if (state.volume.spreads.length > 0)
+    selectSpread(state.volume.spreads[state.volume.spreads.length - imported]);
 }
 
 // ── Spread selection ───────────────────────────────────────────────────────
@@ -284,6 +346,8 @@ async function selectSpread(spread) {
   renderSegments('right');
   renderSegmentList();
   updateCounts();
+  document.querySelectorAll('.tab-content').forEach(el => { el.scrollTop = 0; });
+  syncPanelScroll();
 
   // Highlight in list
   document.querySelectorAll('.spread-item').forEach(el => {
@@ -355,8 +419,10 @@ async function detectPage(side) {
   });
 
   if (result.ok) {
-    const filtered = filterRegionsBySettings(result.regions);
+    const filtered = filterContainedRegions(filterRegionsBySettings(result.regions));
     spread.pages[side].segments = filtered;
+    recomputeOrder(side);
+    computeVolumeOrder();
     setStatus(`Detected ${filtered.length} region(s) on ${side} page (${result.regions.length} total)`, 'idle');
   } else {
     setStatus(`Detection error: ${result.error}`, 'idle');
@@ -406,15 +472,29 @@ function createSegmentEl(seg) {
     border-color: ${cfg.color};
     background:   ${cfg.bg};
   `;
-  const conf = Math.round((seg.confidence || 0) * 100);
+  const conf     = Math.round((seg.confidence || 0) * 100);
+  const orderVal = seg.volOrder !== undefined ? seg.volOrder + 1 : (seg.order !== undefined ? seg.order + 1 : '?');
+  const colBadge = seg.column > 0 ? `<span class="seg-col">c${seg.column}</span>` : '';
   el.innerHTML = `
     <div class="seg-label" style="background:${cfg.color}">
-      <span>${cfg.label}</span>
+      <input class="seg-order-input" type="number" min="1" value="${orderVal}" title="Reading order">
+      ${colBadge}<span>${cfg.label}</span>
       <span class="seg-conf">${conf}%</span>
       <button class="seg-del" data-id="${seg.id}">✕</button>
     </div>
     <div class="seg-resize"></div>
   `;
+  el.querySelector('.seg-order-input').addEventListener('change', ev => {
+    ev.stopPropagation();
+    const newOrder = parseInt(ev.target.value, 10) - 1;
+    if (isNaN(newOrder) || newOrder < 0) return;
+    const page = state.spread?.pages[_segSide(el)];
+    if (page) page.segments.forEach(s => { if (s.id !== seg.id && s.order >= newOrder) s.order++; });
+    seg.order = newOrder; seg.orderLocked = true;
+    renderSegments(_segSide(el));
+  });
+  el.querySelector('.seg-order-input').addEventListener('mousedown', ev => ev.stopPropagation());
+  el.querySelector('.seg-order-input').addEventListener('click',     ev => ev.stopPropagation());
   return el;
 }
 
@@ -549,6 +629,8 @@ function initDrawing(layer, side) {
     };
 
     state.spread.pages[side].segments.push(seg);
+    recomputeOrder(side);
+    computeVolumeOrder();
     drawEl.remove(); drawEl = null;
     renderSegments(side);
     renderSegmentList();
@@ -736,7 +818,7 @@ function renderOCRPanel() {
   for (const side of ['left', 'right']) {
     const page = state.spread.pages[side];
     if (!page) continue;
-    const sortedSegs = [...page.segments].sort((a,b)=>a.y-b.y);
+    const sortedSegs = [...page.segments].sort((a,b)=>(a.order??a.y)-(b.order??b.y));
     sortedSegs.forEach(seg => {
       const res = page.ocrResults[seg.id];
       if (!res) return;
@@ -747,6 +829,7 @@ function renderOCRPanel() {
         <div class="ocr-block-hdr" style="background:${cfg.color}">
           <span>${cfg.label}</span>
           <span style="font-size:0.6rem;opacity:0.8">${side} · ${Math.round((res.confidence||0)*100)}% conf</span>
+          <button class="ocr-autocorrect-btn">Auto-correct</button>
         </div>
         <div class="ocr-block-text" contenteditable="true"></div>
       `;
@@ -755,8 +838,32 @@ function renderOCRPanel() {
       el.querySelector('.ocr-block-text').textContent = res.text || '';
       // Read back with innerText to preserve line breaks from <br> elements
       // that contenteditable inserts when the user presses Enter.
-      el.querySelector('.ocr-block-text').addEventListener('input', ev => {
-        res.text = ev.target.innerText;
+      el.querySelector('.ocr-block-text').addEventListener('input', ev => { res.text = ev.target.innerText; });
+      el.querySelector('.ocr-autocorrect-btn').addEventListener('click', async () => {
+        const btn = el.querySelector('.ocr-autocorrect-btn');
+        const textEl = el.querySelector('.ocr-block-text');
+        const orig = res.text || '';
+        if (!orig.trim()) return;
+        if (!res._original) res._original = orig;
+        btn.textContent = 'Correcting…'; btn.disabled = true;
+        try {
+          const result = await sidecar('correct_ocr', { text: orig });
+          if (result.ok && result.corrected) {
+            res.text = result.corrected; textEl.textContent = result.corrected;
+            btn.textContent = '✓ Undo'; btn.disabled = false;
+            btn.classList.add('ocr-autocorrect-done');
+            btn.onclick = () => {
+              res.text = res._original; textEl.textContent = res._original;
+              delete res._original;
+              btn.textContent = 'Auto-correct'; btn.disabled = false;
+              btn.classList.remove('ocr-autocorrect-done'); btn.onclick = null;
+            };
+          } else {
+            btn.textContent = 'Error'; btn.disabled = false;
+            setTimeout(() => { btn.textContent = 'Auto-correct'; }, 2000);
+            if (result.error) setStatus(`Auto-correct: ${result.error}`, 'idle');
+          }
+        } catch(e) { btn.textContent = 'Error'; btn.disabled = false; setTimeout(() => { btn.textContent = 'Auto-correct'; }, 2000); }
       });
       dom.ocrPanel.appendChild(el);
     });
@@ -772,7 +879,7 @@ function renderCompiledPanel() {
   for (const side of ['left', 'right']) {
     const page = state.spread.pages[side];
     if (!page || Object.keys(page.ocrResults).length === 0) continue;
-    const sorted = [...page.segments].sort((a,b)=>a.y-b.y);
+    const sorted = [...page.segments].sort((a,b)=>(a.order??a.y)-(b.order??b.y));
     sorted.forEach(seg => {
       const res = page.ocrResults[seg.id];
       if (!res?.text?.trim()) return;
@@ -821,6 +928,303 @@ document.querySelectorAll('.type-btn').forEach(btn => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────
+
+// ── Panel scroll sync ──────────────────────────────────────────────────────
+function syncPanelScroll() {
+  const a = document.querySelector('.spread-item.active');
+  if (a) a.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+// ── Language selector ──────────────────────────────────────────────────────
+async function populateLanguages() {
+  const sel = document.getElementById('ocrLanguage');
+  const mod = document.getElementById('ocrModel');
+  if (!sel) return;
+  try {
+    const r = await sidecar('get_languages');
+    if (!r.ok) return;
+    const useBest = (mod?.value || 'best') === 'best';
+    const langs = useBest ? (r.languages.tessdata_best||[]) : (r.languages.tessdata||[]);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (!langs.length) { sel.innerHTML = '<option value="eng">eng</option>'; return; }
+    langs.forEach(code => {
+      const o = document.createElement('option');
+      o.value = code; o.textContent = code;
+      if (code === prev || code === 'eng') o.selected = true;
+      sel.appendChild(o);
+    });
+    if (!sel.value) sel.value = langs[0];
+  } catch(e) { console.warn('Could not load languages:', e); }
+}
+
+// ── Reading order ──────────────────────────────────────────────────────────
+function recomputeOrder(side) {
+  const page = state.spread?.pages[side];
+  if (!page) return;
+  const segs = page.segments;
+  const bodySegs = segs.filter(s => s.type === 'body');
+  let gutterX = null;
+  if (bodySegs.some(s => s.column > 0)) {
+    const c1 = bodySegs.filter(s => s.column === 1);
+    const c2 = bodySegs.filter(s => s.column === 2);
+    if (c1.length && c2.length)
+      gutterX = (Math.max(...c1.map(s=>s.x+s.w)) + Math.min(...c2.map(s=>s.x))) / 2;
+  }
+  const locked = segs.filter(s => s.orderLocked);
+  if (locked.length) {
+    const used = new Set(locked.map(s => s.order));
+    let idx = 0;
+    segs.filter(s => !s.orderLocked).sort((a,b)=>a.y-b.y)
+        .forEach(s => { while (used.has(idx)) idx++; s.order = idx++; });
+    return;
+  }
+  let idx = 0;
+  segs.filter(s=>s.type==='header').sort((a,b)=>a.y-b.y).forEach(s=>{s.order=idx++;s.column=s.column||0;});
+  const bodies = segs.filter(s=>s.type==='body');
+  if (gutterX !== null) {
+    const c1 = bodies.filter(s=>(s.x+s.w/2)<gutterX).sort((a,b)=>a.y-b.y);
+    const c2 = bodies.filter(s=>(s.x+s.w/2)>=gutterX).sort((a,b)=>a.y-b.y);
+    if (c1.length && c2.length) {
+      c1.forEach(s=>{s.order=idx++;s.column=1;}); c2.forEach(s=>{s.order=idx++;s.column=2;});
+    } else bodies.sort((a,b)=>a.y-b.y).forEach(s=>{s.order=idx++;s.column=0;});
+  } else bodies.sort((a,b)=>a.y-b.y).forEach(s=>{s.order=idx++;s.column=0;});
+  segs.filter(s=>!['header','pagenum','body'].includes(s.type)).sort((a,b)=>a.y-b.y).forEach(s=>{s.order=idx++;});
+  segs.filter(s=>s.type==='pagenum').sort((a,b)=>a.y-b.y).forEach(s=>{s.order=idx++;});
+}
+
+function _segSide(el) {
+  const layer = (el.closest('.seg-box')||el).closest('.seg-layer');
+  return layer?.id === 'segLayerLeft' ? 'left' : 'right';
+}
+
+function computeVolumeOrder() {
+  if (!state.volume) return;
+  let idx = 0;
+  for (const spread of state.volume.spreads)
+    for (const side of ['left','right']) {
+      const page = spread.pages[side];
+      if (!page?.segments?.length) continue;
+      [...page.segments].sort((a,b)=>(a.order??0)-(b.order??0)).forEach(seg => { seg.volOrder = idx++; });
+    }
+}
+
+// ── Image tools ────────────────────────────────────────────────────────────
+function getPageHistory(side) {
+  if (!state.spread) return [];
+  const page = state.spread.pages[side];
+  if (!page.imageHistory) page.imageHistory = [];
+  return page.imageHistory;
+}
+
+async function processImage(side, op, params={}) {
+  if (!state.spread) return;
+  const imgPath = side==='left' ? state.spread.leftPath : state.spread.rightPath;
+  if (!imgPath) return;
+  setStatus(`Applying ${op}...`, 'busy');
+  const result = await sidecar('process_image', {op, image_path:imgPath, ...params});
+  if (!result.ok) { setStatus(`Image error: ${result.error}`, 'idle'); return; }
+  getPageHistory(side).push(imgPath);
+  if (side==='left') state.spread.leftPath=result.new_path;
+  else state.spread.rightPath=result.new_path;
+  const imgEl = side==='left' ? dom.pageImgLeft : dom.pageImgRight;
+  await loadPageImageFromPath(imgEl, result.new_path);
+  state.spread.pages[side].segments=[]; state.spread.pages[side].ocrResults={};
+  await detectPage(side); renderSegments(side); renderSegmentList();
+  updateImageToolPanel(side, result); setStatus(`${op} applied`, 'idle');
+}
+
+async function undoImageOp(side) {
+  const hist = getPageHistory(side); if (!hist.length) return;
+  const prev = hist.pop();
+  if (side==='left') state.spread.leftPath=prev; else state.spread.rightPath=prev;
+  const imgEl = side==='left' ? dom.pageImgLeft : dom.pageImgRight;
+  await loadPageImageFromPath(imgEl, prev);
+  state.spread.pages[side].segments=[]; state.spread.pages[side].ocrResults={};
+  await detectPage(side); renderSegments(side); renderSegmentList();
+  setStatus('Undo applied', 'idle'); updateImageToolPanel(side, null);
+}
+
+function updateImageToolPanel(side, result) {
+  const panel = document.getElementById(`imgToolPanel_${side}`);
+  if (!panel) return;
+  const u = panel.querySelector('.itp-undo');
+  if (u) u.disabled = getPageHistory(side).length === 0;
+  const st = panel.querySelector('.itp-status');
+  if (st) st.textContent = result?.angle !== undefined ? `Corrected ${result.angle}°` : result ? 'Applied' : '';
+}
+
+let perspState = null;
+
+function startPerspectiveMode(side) {
+  if (perspState) cancelPerspectiveMode();
+  const layer = side==='left' ? dom.segLayerLeft : dom.segLayerRight;
+  const overlay = document.createElement('div'); overlay.className='persp-overlay'; layer.appendChild(overlay);
+  const handles = [[0.02,0.02],[0.98,0.02],[0.98,0.98],[0.02,0.98]].map(([nx,ny]) => {
+    const el = document.createElement('div'); el.className='persp-handle';
+    el.style.left=`${nx*100}%`; el.style.top=`${ny*100}%`; layer.appendChild(el);
+    const h = {x:nx,y:ny,el};
+    el.addEventListener('mousedown', ev => {
+      ev.stopPropagation(); const lr = layer.getBoundingClientRect();
+      const mv=e=>{h.x=Math.max(0,Math.min(1,(e.clientX-lr.left)/lr.width));h.y=Math.max(0,Math.min(1,(e.clientY-lr.top)/lr.height));el.style.left=`${h.x*100}%`;el.style.top=`${h.y*100}%`;};
+      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
+      document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
+    }); return h;
+  });
+  perspState={side,handles,overlay};
+  const panel=document.getElementById(`imgToolPanel_${side}`);
+  if(panel){panel.querySelector('.persp-apply-bar').style.display='flex';panel.querySelector('[data-op="perspective"]').textContent='Editing...';}
+}
+
+function cancelPerspectiveMode() {
+  if (!perspState) return;
+  const layer=perspState.side==='left'?dom.segLayerLeft:dom.segLayerRight;
+  perspState.overlay.remove(); perspState.handles.forEach(h=>h.el.remove());
+  const panel=document.getElementById(`imgToolPanel_${perspState.side}`);
+  if(panel){panel.querySelector('.persp-apply-bar').style.display='none';panel.querySelector('[data-op="perspective"]').textContent='Perspective';}
+  perspState=null;
+}
+
+async function applyPerspective() {
+  if (!perspState) return;
+  const pts=perspState.handles.map(h=>[h.x,h.y]); const side=perspState.side;
+  cancelPerspectiveMode(); await processImage(side,'perspective_correct',{src_points:pts});
+}
+
+function renderImageToolPanel(side) {
+  const wrap=side==='left'?dom.wrapLeft:dom.wrapRight;
+  const existing=document.getElementById(`imgToolPanel_${side}`);
+  if(existing){existing._resetPreview?.();existing.remove();return;}
+  const panel=document.createElement('div'); panel.id=`imgToolPanel_${side}`; panel.className='img-tool-panel';
+  panel.innerHTML=`
+    <div class="itp-header"><span>Image Tools</span><span class="itp-status"></span><button class="itp-undo tbtn" disabled>Undo</button></div>
+    <div class="itp-section"><div class="itp-section-title">Auto-correct</div><div class="itp-row"><button class="tbtn" data-op="deskew">Deskew</button></div></div>
+    <div class="itp-section"><div class="itp-section-title">Rotate</div>
+      <div class="itp-row"><button class="tbtn" data-op="rotate-ccw">90 CCW</button><button class="tbtn" data-op="rotate-cw">90 CW</button><button class="tbtn" data-op="rotate-180">180</button></div>
+      <div class="itp-row itp-slider-row"><label>Fine <span class="itp-fine-val">0</span></label><input type="range" min="-10" max="10" step="0.5" value="0" class="itp-rotate-fine"><button class="tbtn" data-op="rotate-fine">Apply</button></div>
+    </div>
+    <div class="itp-section"><div class="itp-section-title">Levels <small>(live preview)</small></div>
+      <div class="itp-row itp-slider-row"><label>Black <span class="itp-bp-val">0</span></label><input type="range" min="0" max="127" value="0" class="itp-black-pt"></div>
+      <div class="itp-row itp-slider-row"><label>White <span class="itp-wp-val">255</span></label><input type="range" min="128" max="255" value="255" class="itp-white-pt"></div>
+      <div class="itp-row itp-slider-row"><label>Gamma <span class="itp-gm-val">1.0</span></label><input type="range" min="0.2" max="3.0" step="0.1" value="1.0" class="itp-gamma"></div>
+      <div class="itp-row"><button class="tbtn" data-op="levels">Apply Levels</button></div>
+    </div>
+    <div class="itp-section"><div class="itp-section-title">Perspective</div>
+      <div class="itp-row"><button class="tbtn" data-op="perspective">Perspective</button></div>
+      <div class="persp-apply-bar itp-row" style="display:none"><button class="tbtn primary" data-op="persp-apply">Apply</button><button class="tbtn" data-op="persp-cancel">Cancel</button></div>
+    </div>`;
+  wrap.appendChild(panel);
+  const imgEl=side==='left'?dom.pageImgLeft:dom.pageImgRight;
+  const bp=panel.querySelector('.itp-black-pt'),wp=panel.querySelector('.itp-white-pt'),gm=panel.querySelector('.itp-gamma');
+  function lvlPreview(){
+    const b=parseInt(bp.value),w=parseInt(wp.value),g=parseFloat(gm.value);
+    panel.querySelector('.itp-bp-val').textContent=b;
+    panel.querySelector('.itp-wp-val').textContent=w;
+    panel.querySelector('.itp-gm-val').textContent=g.toFixed(1);
+    const c=(255/(w-b)).toFixed(2),br=(1-b/255).toFixed(2),gb=(g>1?(1+(g-1)*0.25):(1-(1-g)*0.25)).toFixed(2);
+    imgEl.style.filter=`contrast(${c}) brightness(${br}) brightness(${gb})`;
+  }
+  bp.addEventListener('input',lvlPreview); wp.addEventListener('input',lvlPreview); gm.addEventListener('input',lvlPreview);
+  panel._resetPreview=()=>{imgEl.style.filter='';};
+  panel.querySelector('.itp-rotate-fine').addEventListener('input',ev=>{panel.querySelector('.itp-fine-val').textContent=ev.target.value;});
+  panel.addEventListener('click',async ev=>{
+    const btn=ev.target.closest('[data-op]'); if(!btn)return; const op=btn.dataset.op;
+    if(op==='deskew')           await processImage(side,'deskew');
+    else if(op==='rotate-ccw')  await processImage(side,'rotate',{angle:270});
+    else if(op==='rotate-cw')   await processImage(side,'rotate',{angle:90});
+    else if(op==='rotate-180')  await processImage(side,'rotate',{angle:180});
+    else if(op==='rotate-fine'){const a=parseFloat(panel.querySelector('.itp-rotate-fine').value);if(a!==0)await processImage(side,'rotate',{angle:(a+360)%360});}
+    else if(op==='levels'){imgEl.style.filter='';await processImage(side,'adjust_levels',{black_pt:parseInt(bp.value),white_pt:parseInt(wp.value),gamma:parseFloat(gm.value)});}
+    else if(op==='perspective')  startPerspectiveMode(side);
+    else if(op==='persp-apply')  await applyPerspective();
+    else if(op==='persp-cancel') cancelPerspectiveMode();
+  });
+  panel.querySelector('.itp-undo').addEventListener('click',()=>undoImageOp(side));
+  updateImageToolPanel(side,null);
+}
+
+
+// ── PDF progress UI ────────────────────────────────────────────────────────
+function showPdfProgress(filename, done, total) {
+  let bar = document.getElementById('pdfProgressBar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'pdfProgressBar';
+    bar.className = 'pdf-progress-overlay';
+    bar.innerHTML = `
+      <div class="pdf-progress-box">
+        <div class="pdf-progress-title">Converting PDF</div>
+        <div class="pdf-progress-filename" id="pdfProgressName"></div>
+        <div class="pdf-progress-track">
+          <div class="pdf-progress-fill" id="pdfProgressFill"></div>
+        </div>
+        <div class="pdf-progress-label" id="pdfProgressLabel">Starting…</div>
+      </div>`;
+    document.body.appendChild(bar);
+  }
+  bar.style.display = 'flex';
+  document.getElementById('pdfProgressName').textContent = filename;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  document.getElementById('pdfProgressFill').style.width = pct + '%';
+  document.getElementById('pdfProgressLabel').textContent =
+    total > 0 ? `${done} / ${total} pages (${pct}%)` : 'Starting…';
+}
+
+function hidePdfProgress() {
+  const bar = document.getElementById('pdfProgressBar');
+  if (bar) bar.style.display = 'none';
+}
+
+async function pollPdfJob(jobId, filename) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 800));
+    let job;
+    try {
+      job = await fetch(`${API}/api/pdf_progress/${jobId}`).then(r => r.json());
+    } catch(e) { continue; }
+
+    if (!job.ok) return null;
+
+    showPdfProgress(filename, job.progress, job.total);
+
+    if (job.status === 'done')  return job.page_paths;
+    if (job.status === 'error') {
+      setStatus(`PDF error: ${job.error}`, 'idle');
+      return null;
+    }
+  }
+}
+
+
+// ── Progress bar ───────────────────────────────────────────────────────────
+let _progressBar = null;
+
+function showProgressBar(label, current, total) {
+  hideProgressBar();
+  const el = document.createElement('div');
+  el.className = 'progress-bar-wrap';
+  el.innerHTML = `
+    <span class="progress-bar-label">${label}</span>
+    <div class="progress-bar-track"><div class="progress-bar-fill" style="width:0%"></div></div>
+    <span class="progress-bar-count">${current} / ${total}</span>
+  `;
+  document.querySelector('.statusbar').after(el);
+  _progressBar = el;
+  updateProgressBar(current, total, label);
+}
+
+function updateProgressBar(current, total, label) {
+  if (!_progressBar) return;
+  const pct = total > 0 ? Math.round(current / total * 100) : 0;
+  _progressBar.querySelector('.progress-bar-fill').style.width = pct + '%';
+  _progressBar.querySelector('.progress-bar-count').textContent = `${current} / ${total}`;
+  if (label) _progressBar.querySelector('.progress-bar-label').textContent = label;
+}
+
+function hideProgressBar() {
+  if (_progressBar) { _progressBar.remove(); _progressBar = null; }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // Toolbar actions
   document.getElementById('btnNewProject').addEventListener('click', newProject);
@@ -848,38 +1252,35 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.spread) { renderSegments('left'); renderSegments('right'); }
   });
 
-
-// ── Language selector ──────────────────────────────────────────────────────
-async function populateLanguages() {
-  const sel      = document.getElementById('ocrLanguage');
-  const modelSel = document.getElementById('ocrModel');
-  if (!sel) return;
-  const useBest = (modelSel?.value || 'best') === 'best';
-  try {
-    const r = await sidecar('get_languages');
-    if (!r.ok) return;
-    const langs = useBest
-      ? (r.languages.tessdata_best || [])
-      : (r.languages.tessdata     || []);
-    const prev = sel.value;
-    sel.innerHTML = '';
-    if (!langs.length) {
-      sel.innerHTML = '<option value="eng">eng</option>';
-      return;
-    }
-    langs.forEach(code => {
-      const opt = document.createElement('option');
-      opt.value       = code;
-      opt.textContent = code;
-      if (code === prev || code === 'eng') opt.selected = true;
-      sel.appendChild(opt);
+  // Sidebar collapse
+  const _sbBtn = document.getElementById('btnSidebarToggle');
+  _sbBtn?.addEventListener('click', () => {
+    const c = document.querySelector('.sidebar').classList.toggle('collapsed');
+    _sbBtn.textContent = c ? '›' : '‹';
+    _sbBtn.title = c ? 'Expand sidebar' : 'Collapse sidebar';
+  });
+  // Panel expand
+  const _panBtn = document.getElementById('btnPanelExpand');
+  _panBtn?.addEventListener('click', () => {
+    const e = document.querySelector('.right-panel').classList.toggle('expanded');
+    _panBtn.textContent = e ? '‹' : '›';
+    _panBtn.title = e ? 'Collapse panel' : 'Expand panel';
+  });
+  // Canvas view controls
+  document.querySelectorAll('.canvas-ctrl-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.canvas-ctrl-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const cv = document.getElementById('canvasArea');
+      cv.classList.remove('view-both','view-left','view-right');
+      cv.classList.add('view-' + btn.dataset.view);
     });
-    if (!sel.value) sel.value = langs[0];
-  } catch(e) {
-    console.warn('Could not load language list:', e);
-  }
-}
-
+  });
+  // Edit image buttons
+  document.getElementById('btnEditImageLeft')?.addEventListener('click', () => renderImageToolPanel('left'));
+  document.getElementById('btnEditImageRight')?.addEventListener('click', () => renderImageToolPanel('right'));
+  // Language list reload on model change
+  document.getElementById('ocrModel')?.addEventListener('change', populateLanguages);
   // Ping sidecar then populate languages
   (async () => {
     try {
@@ -890,9 +1291,6 @@ async function populateLanguages() {
       setStatus('Server not available — is app.py running?', 'error');
     }
   })();
-
-  // Repopulate when model changes
-  document.getElementById('ocrModel')?.addEventListener('change', populateLanguages);
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────

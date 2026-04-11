@@ -19,6 +19,13 @@ from detector import RegionDetector
 from ocr import OCREngine
 from compiler import TextCompiler
 from template import VolumeTemplate
+try:
+    from pdf_importer import pdf_to_images, pdf_page_count, pdf_start_job, pdf_next_page
+    _HAS_PDF = True
+    _HAS_PDF_ERR = None
+except Exception as _e:
+    _HAS_PDF = False
+    _HAS_PDF_ERR = str(_e)
 
 splitter  = SpineSplitter()
 detector  = RegionDetector()
@@ -55,7 +62,10 @@ def handle(msg: dict) -> dict:
     # ── SPLIT SPREAD ──────────────────────────────────────
     elif action == "split_spread":
         image_path = msg["image_path"]
-        out_dir    = msg["out_dir"]
+        out_dir    = msg.get("out_dir", "")
+        if not out_dir:
+            import tempfile
+            out_dir = tempfile.mkdtemp(prefix="gridocr_split_")
         result = splitter.split(image_path, out_dir)
         return {"ok": True, **result}
 
@@ -152,6 +162,60 @@ def handle(msg: dict) -> dict:
         t.load(path)
         templates[volume_id] = t
         return {"ok": True, "template": t.to_dict()}
+
+    # ── PDF IMPORT ────────────────────────────────────────
+    # ── CORRECT OCR (rule-based) ──────────────────────────
+    elif action == "correct_ocr":
+        try:
+            from ocr_corrector import correct as _correct
+            text   = msg.get("text", "")
+            result = _correct(text)
+            return result
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ── PROCESS IMAGE ────────────────────────────────────
+    elif action == "process_image":
+        from image_processor import deskew, rotate, adjust_levels, perspective_correct
+        op         = msg["op"]
+        image_path = msg["image_path"]
+        if op == "deskew":
+            return deskew(image_path)
+        elif op == "rotate":
+            return rotate(image_path, msg["angle"])
+        elif op == "adjust_levels":
+            return adjust_levels(image_path, msg.get("black_pt",0),
+                                 msg.get("white_pt",255), msg.get("gamma",1.0))
+        elif op == "perspective_correct":
+            return perspective_correct(image_path, msg["src_points"])
+        else:
+            return {"ok": False, "error": f"Unknown image op: {op}"}
+
+    elif action == "pdf_to_images":
+        if not _HAS_PDF:
+            return {"ok": False,
+                    "error": f"pymupdf not available: {_HAS_PDF_ERR}. Python: {sys.executable}"}
+        import tempfile
+        out_dir = msg.get("out_dir") or tempfile.mkdtemp(prefix="gridocr_pdf_")
+        return pdf_to_images(msg["pdf_path"], out_dir, msg.get("dpi", 200))
+
+    elif action == "pdf_start_job":
+        if not _HAS_PDF:
+            return {"ok": False,
+                    "error": f"pymupdf not available: {_HAS_PDF_ERR}. Python: {sys.executable}"}
+        import tempfile
+        out_dir = msg.get("out_dir") or tempfile.mkdtemp(prefix="gridocr_pdf_")
+        return pdf_start_job(msg["pdf_path"], out_dir, msg.get("dpi", 200))
+
+    elif action == "pdf_next_page":
+        if not _HAS_PDF:
+            return {"ok": False, "error": "pymupdf not installed"}
+        return pdf_next_page(msg["job_id"])
+
+    elif action == "pdf_page_count":
+        if not _HAS_PDF:
+            return {"ok": False, "error": "pymupdf not installed"}
+        return {"ok": True, "count": pdf_page_count(msg["pdf_path"])}
 
     else:
         return {"ok": False, "error": f"Unknown action: {action}"}

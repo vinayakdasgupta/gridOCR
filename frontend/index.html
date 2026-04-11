@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>gridOCR</title>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&family=Noto+Sans+Bengali:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&family=Noto+Sans+Bengali:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -51,8 +51,11 @@
   <!-- Left sidebar: spread list -->
   <div class="sidebar">
     <div class="sidebar-head">
-      <span id="volumeName" class="vol-name">No volume</span>
-      <span id="spreadCount" class="meta-count">0 spreads</span>
+      <div class="sidebar-head-text">
+        <div id="volumeName" class="vol-name">No volume</div>
+        <div id="spreadCount" class="meta-count">0 spreads</div>
+      </div>
+      <button class="sidebar-toggle" id="btnSidebarToggle" title="Collapse sidebar">‹</button>
     </div>
     <div class="spread-list" id="spreadList">
       <div class="empty-state">Import spreads<br>to begin</div>
@@ -61,6 +64,11 @@
 
   <!-- Canvas: left and right pages side by side -->
   <div class="canvas-area" id="canvasArea">
+    <div class="canvas-controls">
+      <button class="canvas-ctrl-btn active" data-view="both">Both</button>
+      <button class="canvas-ctrl-btn" data-view="left">Left</button>
+      <button class="canvas-ctrl-btn" data-view="right">Right</button>
+    </div>
 
     <div class="page-wrap" id="wrapLeft">
       <div class="page-label">◀ LEFT (verso)</div>
@@ -80,6 +88,7 @@
         <img id="pageImgLeft" class="page-img" src="" alt="" draggable="false" style="display:none">
         <div class="seg-layer" id="segLayerLeft"></div>
       </div>
+      <button class="tbtn page-edit-btn" id="btnEditImageLeft">✏ Edit Image</button>
     </div>
 
     <div class="spine-indicator" title="Detected spine"></div>
@@ -102,16 +111,20 @@
         <img id="pageImgRight" class="page-img" src="" alt="" draggable="false" style="display:none">
         <div class="seg-layer" id="segLayerRight"></div>
       </div>
+      <button class="tbtn page-edit-btn" id="btnEditImageRight">✏ Edit Image</button>
     </div>
 
   </div>
 
   <!-- Right panel: segments / OCR / compiled -->
   <div class="right-panel">
-    <div class="panel-tabs">
-      <button class="tab-btn active" data-tab="segments">Regions</button>
-      <button class="tab-btn"        data-tab="ocr">OCR</button>
-      <button class="tab-btn"        data-tab="compiled">Output</button>
+    <div class="panel-header">
+      <div class="panel-tabs">
+        <button class="tab-btn active" data-tab="segments">Regions</button>
+        <button class="tab-btn"        data-tab="ocr">OCR</button>
+        <button class="tab-btn"        data-tab="compiled">Output</button>
+      </div>
+      <button class="panel-expand-btn" id="btnPanelExpand" title="Expand panel">‹</button>
     </div>
 
     <div class="tab-content active" id="tab-segments">
@@ -151,10 +164,10 @@
   <div class="settings-title">Auto-detection settings</div>
   <div class="settings-body">
     <label class="setting-row"><input type="checkbox" id="detectBody"      checked> <span class="tdot" style="background:#3d5a6b"></span> Body text</label>
-    <label class="setting-row"><input type="checkbox" id="detectHeader"    checked> <span class="tdot" style="background:#c4922a"></span> Running header</label>
-    <label class="setting-row"><input type="checkbox" id="detectPagenum"   checked> <span class="tdot" style="background:#8b3a1a"></span> Page numbers</label>
-    <label class="setting-row"><input type="checkbox" id="detectFootnote"  checked> <span class="tdot" style="background:#6b4a7a"></span> Footnotes</label>
-    <label class="setting-row"><input type="checkbox" id="preserveLineBreaks" checked> <span class="tdot" style="background:#3d5a6b"></span> Preserve line breaks in OCR output</label>
+    <label class="setting-row"><input type="checkbox" id="detectHeader"> <span class="tdot" style="background:#c4922a"></span> Running header</label>
+    <label class="setting-row"><input type="checkbox" id="detectPagenum"> <span class="tdot" style="background:#8b3a1a"></span> Page numbers</label>
+    <label class="setting-row"><input type="checkbox" id="detectFootnote"> <span class="tdot" style="background:#6b4a7a"></span> Footnotes</label>
+    <label class="setting-row"><input type="checkbox" id="preserveLineBreaks"> <span class="tdot" style="background:#3d5a6b"></span> Preserve line breaks in OCR output</label>
   </div>
   <div class="settings-divider"></div>
   <div class="setting-row setting-row--select">

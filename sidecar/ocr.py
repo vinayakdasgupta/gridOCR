@@ -225,7 +225,7 @@ class OCREngine:
         # Kernel must be odd and large enough to span a text line but not
         # so large it exceeds the crop (which produces garbage for headers).
         h_crop = gray.shape[0]
-        bg_k = max(min(51, (h_crop // 2) * 2 - 1), 5)  # odd, 5..51
+        bg_k = max(min(101, (h_crop // 4) * 2 + 1), 11)  # odd, 11..101
         bg   = cv2.GaussianBlur(gray, (bg_k, bg_k), 0).astype(np.float32)
         norm = np.clip(gray.astype(np.float32) / (bg + 1e-6) * 200,
                        0, 255).astype(np.uint8)
@@ -249,17 +249,28 @@ class OCREngine:
         norm = cv2.fastNlMeansDenoising(norm, h=10)
 
         # ── Binarise ──────────────────────────────────────
-        # Adaptive threshold for all types — it handles local illumination
-        # variation far better than Otsu on small crops. Block size must be
-        # odd and smaller than the crop; scale with crop height after upscale.
+        # Otsu thresholding after background normalisation.
+        # Otsu finds the global threshold separating ink vs paper/bleed-through
+        # by minimising within-class variance. This outperforms adaptive
+        # thresholding for bleed-through suppression: adaptive normalises
+        # locally so bleed-through appears as dark as primary ink in its
+        # window. Otsu uses the full-crop histogram where primary ink (darker
+        # after bg_div) and bleed-through (lighter) form separable populations.
+        # We subtract a conservative offset from Otsu's threshold to push the
+        # cut toward the darker primary-ink cluster.
+        # For very short crops (headers/pagenums) fall back to fixed threshold.
         h_scaled = norm.shape[0]
-        block = max(min(31, (h_scaled // 4) * 2 + 1), 11)  # odd, 11..31
-        binary = cv2.adaptiveThreshold(
-            norm, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            blockSize=block, C=12
-        )
+        if h_scaled < 80:
+            # Too few rows for reliable Otsu — use fixed conservative threshold
+            binary = cv2.threshold(norm, 127, 255, cv2.THRESH_BINARY)[1]
+        else:
+            otsu_t = cv2.threshold(norm, 0, 255,
+                                   cv2.THRESH_BINARY + cv2.THRESH_OTSU)[0]
+            # Apply threshold 12 levels below Otsu's split to prefer primary
+            # ink over bleed-through (which lands just below Otsu's cut).
+            conservative = max(60, int(otsu_t) - 12)
+            binary = cv2.threshold(norm, conservative, 255,
+                                   cv2.THRESH_BINARY)[1]
 
         return binary
 

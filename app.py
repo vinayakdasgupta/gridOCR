@@ -22,6 +22,10 @@ PROJECTS_DIR = BASE_DIR / "projects"   # all project files live here
 PROJECTS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR))
+import uuid as _uuid_mod
+
+# ── PDF job store ────────────────────────────────────────────────────
+_pdf_jobs = {}  # job_id -> {"doc": fitz.Document, "out_dir": str, "dpi": int, "paths": []}
 
 # ── Sidecar process ────────────────────────────────────────────────────────
 
@@ -143,6 +147,36 @@ def load_project():
     with open(path, "r", encoding="utf-8") as f:
         project = _json.load(f)
     return jsonify({"ok": True, "project": project})
+
+@app.route("/api/job/start", methods=["POST"])
+def job_start():
+    """Start a long-running sidecar action in a background thread. Returns job_id."""
+    data   = request.get_json()
+    job_id = str(_uuid_mod.uuid4())
+    msg    = data.get("message", {})
+    _pdf_jobs[job_id] = {"status": "running", "result": None, "progress": 0, "total": 0, "error": None}
+
+    def run():
+        try:
+            result = sidecar.call(msg)
+            _pdf_jobs[job_id]["result"] = result
+            _pdf_jobs[job_id]["status"] = "done"
+        except Exception as e:
+            _pdf_jobs[job_id]["status"] = "error"
+            _pdf_jobs[job_id]["error"]  = str(e)
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/job/status/<job_id>", methods=["GET"])
+def job_status(job_id):
+    job = _pdf_jobs.get(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "Job not found"}), 404
+    return jsonify({"ok": True, "status": job["status"], "progress": job["progress"],
+                    "total": job["total"], "result": job["result"], "error": job["error"]})
+
 
 @app.route("/api/project/list", methods=["GET"])
 def list_projects():

@@ -8,7 +8,7 @@ Pipeline per page:
   3. Morph ops     — dilate to merge text into blocks
   4. Contours      — find external contours of text/image blocks
   5. Filter        — remove noise, margins, spine strip, binding edge
-  6. Classify      — heuristic rules → body | header | pagenum (footnote is manual-only)
+  6. Classify      — heuristic rules → body | header | pagenum | footnote
   7. Normalise     — return coords as fractions of ORIGINAL image dimensions
   8. Body merge    — merge/preserve body regions per user settings
 """
@@ -61,14 +61,15 @@ class RegionDetector:
 
     # ── Page zone boundaries (fraction of page height) ────
     HEADER_ZONE  = 0.20
-    FOOTER_ZONE  = 0.90
+    FOOTER_ZONE  = 0.82
+    FOOTNOTE_MIN = 0.75
 
     # ── Size thresholds (fraction of page area) ───────────
     MIN_REGION_AREA  = 0.0005
-    MAX_REGION_AREA  = 0.85
+    MAX_REGION_AREA  = 0.96
     MIN_REGION_H     = 0.010   # regions shorter than 1% of page height are noise
     MIN_SHARPNESS        = 30.0  # Absolute floor — catches bleed-through on low-res scans
-    BLEED_SHARPNESS_RATIO = 0.15  # Region must be ≥ 15% of page median sharpness
+    BLEED_SHARPNESS_RATIO = 0.25  # Region must be ≥ 25% of page median sharpness
 
     # ── Bleed/binding edge filter ─────────────────────────
     # Narrow strips hugging the left inner edge = bleed-through or binding
@@ -178,27 +179,28 @@ class RegionDetector:
         )
 
         # ── 3. Morphological dilation ─────────────────────
-        # Zero a 5px border so page-edge ink (borders, rules) does not
-        # create one giant connected blob that swallows all contours.
-        _pad = 5
-        binary[:_pad,:]=0; binary[-_pad:,:]=0
-        binary[:,:_pad]=0; binary[:,-_pad:]=0
+        # Zero a 5px border so edge-touching ink does not create one
+        # giant connected blob that swallows all contours.
+        # Zero top/side borders (5px) to break edge connections.
+        # Bottom border is only 2px — page numbers often sit very close to the edge.
+        binary[:5, :] = 0; binary[-2:, :] = 0
+        binary[:, :5] = 0; binary[:, -5:] = 0
 
-        # Adaptive kernel sizing: compute the column gutter width from
-        # the vertical ink-density profile, then set the horizontal kernel
-        # to half the gutter width.  This keeps dilation within one column
-        # regardless of image resolution or column count.
+        # Compute gutter width from vertical ink density profile.
+        # The gutter is the deepest low-ink valley in the 20-80% band.
+        # We use half the gutter width as the horizontal kernel so words
+        # merge within a column without bridging across the gutter.
         _col_ink  = binary.sum(axis=0).astype(float)
-        _smoothed = np.convolve(_col_ink, np.ones(5) / 5, mode='same')
-        _lo, _hi  = int(wp * 0.20), int(wp * 0.80)
-        _gv       = _lo + int(np.argmin(_smoothed[_lo:_hi]))
-        _thresh   = _smoothed.mean() * 0.30
+        _smooth   = np.convolve(_col_ink, np.ones(5) / 5, mode='same')
+        _lo, _hi  = int(wp * 0.30), int(wp * 0.70)
+        _gv       = _lo + int(np.argmin(_smooth[_lo:_hi]))
+        _thr      = _smooth.mean() * 0.30
         _gl, _gr  = _gv, _gv
-        while _gl > 0      and _smoothed[_gl] < _thresh: _gl -= 1
-        while _gr < wp - 1 and _smoothed[_gr] < _thresh: _gr += 1
+        while _gl > 0      and _smooth[_gl] < _thr: _gl -= 1
+        while _gr < wp - 1 and _smooth[_gr] < _thr: _gr += 1
         _gutter_w = max(_gr - _gl, 1)
         _kw = max(7, min(55, (_gutter_w // 2) | 1))
-        _kv = max(8, int(hp * 0.018) | 1)
+        _kv = max(8, int(hp * 0.015) | 1)
 
         kh = cv2.getStructuringElement(cv2.MORPH_RECT, (_kw, 2))
         horiz = cv2.dilate(binary, kh, iterations=1)
@@ -251,6 +253,11 @@ class RegionDetector:
         else:
             sharpness_threshold = self.MIN_SHARPNESS
 
+        # ── Pre-pass: compute page-level gray stats for bleed-through filter ──
+        page_gray_center = gray[hp//20:19*hp//20, wp//20:19*wp//20]
+        paper_brightness = float(np.percentile(page_gray_center, 85))
+        ink_thresh       = paper_brightness * 0.72  # pixels darker than this = real ink
+
         # ── Pass 2: classify surviving candidates ──────────
         regions = []
         for (cnt, bx, by, bw, bh, nx_raw, ny_raw, nw_raw, nh_raw,
@@ -258,6 +265,13 @@ class RegionDetector:
 
             # Sharpness filter: bleed-through is relatively soft vs primary ink
             if sharpness < sharpness_threshold:
+                continue
+
+            # Gray contrast filter: bleed-through has very few truly dark pixels
+            # (its ink is lighter gray). Reject regions with < 0.8% dark pixels.
+            roi_gray_c = gray[by:by+bh, bx:bx+bw]
+            dark_frac  = float((roi_gray_c < ink_thresh).mean())
+            if dark_frac < 0.008:
                 continue
 
             # Left-edge tightening only: morphological dilation inflates regions
@@ -309,20 +323,15 @@ class RegionDetector:
         # Drop noise regions (tiny unknowns from bleed-through)
         regions = [r for r in regions if not (r.type == 'unknown' and r.confidence < 0.20)]
 
-        # Pre-assign column to body regions now so merge_body can split by column.
-        # _assign_reading_order will refine this later with full ordering.
-        _gutter_pre = self._find_column_gutter(binary, wp)
-        _gutter_full_pre = ((px / w) + (_gutter_pre * wp / w)) if _gutter_pre is not None else None
-        for r in regions:
-            if r.type == 'body' and _gutter_full_pre is not None:
-                r.column = 1 if (r.x + r.w / 2) < _gutter_full_pre else 2
-
         # Separate body from non-body; apply merge strategy
         body_regions = [r for r in regions if r.type == 'body']
         non_body     = [r for r in regions if r.type != 'body']
 
         # Always merge adjacent non-body same-type regions
         non_body = self._merge_adjacent_same_type(non_body, gap_threshold=0.06)
+
+        # Detect column gutter now so we know whether to suppress body merging
+        _has_columns = self._find_column_gutter(binary, wp) is not None
 
         if preserve_newlines:
             # No merging — every detected block stays independent
@@ -331,19 +340,12 @@ class RegionDetector:
             # Merge only within a paragraph (line gap ≤ 2.5% page height)
             body_regions = self._merge_adjacent_same_type(body_regions, gap_threshold=0.025)
         else:
-            # Default: close all gaps then optionally collapse to one box
+            # Default: close all gaps then optionally collapse to one box.
+            # Skip the all-body merge when columns are detected — collapsing
+            # two column bodies into one bounding box loses the column structure.
             body_regions = self._merge_adjacent_same_type(body_regions, gap_threshold=0.10)
-            if merge_body and len(body_regions) > 1:
-                # Merge within each column separately, not across columns
-                cols = sorted(set(r.column for r in body_regions))
-                merged = []
-                for col in cols:
-                    col_bodies = [r for r in body_regions if r.column == col]
-                    if len(col_bodies) > 1:
-                        merged.append(self._merge_all_body(col_bodies))
-                    else:
-                        merged.extend(col_bodies)
-                body_regions = merged
+            if merge_body and len(body_regions) > 1 and not _has_columns:
+                body_regions = [self._merge_all_body(body_regions)]
 
         regions = non_body + body_regions
 
@@ -376,73 +378,59 @@ class RegionDetector:
     def _find_column_gutter(self, binary: np.ndarray, wp: int) -> Optional[float]:
         """
         Scan the vertical ink-density profile to find a column gutter.
-        Returns normalised gutter x (0-1) or None if no clear gutter found.
+        Returns normalised gutter x (0-1 in page-crop space) or None.
 
-        Strategy: sum ink vertically to get a per-column ink count, smooth it,
-        then find the deepest valley between x=20% and x=80% that is:
-          - significantly darker (less ink) than surrounding columns
-          - present across at least 40% of page height (not just a local gap)
+        Three conditions must all be met:
+        1. Deepest valley in the 30-70% band is below 65% of band mean
+        2. Gutter spans >= 55% of page height (rejects paragraph gaps)
+        3. Ink exists on both sides (rejects empty margins)
         """
         h_bin, w_bin = binary.shape
+        col_ink    = binary.sum(axis=0).astype(float)
+        col_smooth = np.convolve(col_ink, np.ones(5) / 5, mode='same')
+        page_mean  = col_smooth.mean()
 
-        # Column ink sums (how much ink in each vertical column)
-        col_ink = binary.sum(axis=0).astype(float)
-
-        # Smooth to reduce noise from individual character strokes
-        kernel = np.ones(max(1, w_bin // 60)) / max(1, w_bin // 60)
-        col_smooth = np.convolve(col_ink, kernel, mode='same')
-
-        # Search band: 20% to 80% of page width
-        lo = int(w_bin * 0.20)
-        hi = int(w_bin * 0.80)
+        # Search 30-70% to skip left/right margin areas
+        lo = int(w_bin * 0.30)
+        hi = int(w_bin * 0.70)
         band = col_smooth[lo:hi]
-
         if band.size == 0:
             return None
-
-        band_max  = band.max()
-        band_mean = band.mean()
-        valley_x  = int(lo + band.argmin())
+        band_mean  = band.mean()
+        valley_x   = int(lo + band.argmin())
         valley_val = col_smooth[valley_x]
 
-        # Require valley to be meaningfully lower than mean
-        # (at least 35% below mean ink density)
+        # Condition 1: valley must be meaningfully lower than band mean
         if band_mean == 0 or valley_val > band_mean * 0.65:
             return None
 
-        # Verify the gap is real vertically: check that in a horizontal
-        # strip around valley_x (±2% of width), at least 40% of rows
-        # have very low ink compared to the page average row ink.
-        margin = max(2, int(w_bin * 0.02))
-        gutter_strip = binary[:, max(0, valley_x-margin):valley_x+margin]
+        # Condition 2: gutter must span >= 55% of page height
+        margin         = max(2, int(w_bin * 0.02))
+        gutter_strip   = binary[:, max(0, valley_x - margin):valley_x + margin]
         row_ink_gutter = gutter_strip.sum(axis=1)
         row_ink_page   = binary.sum(axis=1)
-        # A row "has a gap" if gutter ink < 10% of page row ink
         gap_rows = np.sum(row_ink_gutter < row_ink_page * 0.10)
-        if gap_rows < h_bin * 0.40:
+        if gap_rows < h_bin * 0.55:
+            return None
+
+        # Condition 3: ink must exist on both sides (not just an empty margin)
+        left_ink  = col_smooth[max(0, valley_x - int(w_bin*0.15)):valley_x].mean()
+        right_ink = col_smooth[valley_x:min(w_bin, valley_x + int(w_bin*0.15))].mean()
+        if left_ink < page_mean * 0.50 or right_ink < page_mean * 0.50:
             return None
 
         return valley_x / w_bin
 
     # ── Reading order assignment ───────────────────────────
 
-    def _assign_reading_order(self, regions: list, binary: np.ndarray, wp: int, px: int, w: int) -> list:
+    def _assign_reading_order(self, regions: list, binary: np.ndarray,
+                               wp: int, px: int, w: int) -> list:
         """
         Assign column and order to all regions.
-
-        If a column gutter is detected:
-          - header/pagenum: column=0, ordered before/after body
-          - body regions left of gutter: column=1, ordered top→bottom
-          - body regions right of gutter: column=2, ordered top→bottom
-          - reading order: header → col1 body → col2 body → pagenum
-
-        If no gutter:
-          - all body regions: column=0, ordered top→bottom
-          - header always first, pagenum always last
+        Converts gutter from page-crop space to full-image space before
+        comparing with region.x which is normalised against full image width.
         """
         gutter_page = self._find_column_gutter(binary, wp)
-        # Convert gutter from page-cropped normalised space to full-image normalised space
-        # so it can be compared directly with region.x which is normalised against full w.
         gutter = (px / w) + (gutter_page * wp / w) if gutter_page is not None else None
 
         headers  = [r for r in regions if r.type == 'header']
@@ -452,41 +440,26 @@ class RegionDetector:
 
         order_idx = 0
 
-        # Headers first, sorted by y
         for r in sorted(headers, key=lambda r: r.y):
-            r.column = 0
-            r.order  = order_idx
-            order_idx += 1
+            r.column = 0; r.order = order_idx; order_idx += 1
 
         if gutter is not None:
-            # Split body regions into two columns by horizontal centre
             col1 = sorted([r for r in bodies if (r.x + r.w/2) < gutter], key=lambda r: r.y)
             col2 = sorted([r for r in bodies if (r.x + r.w/2) >= gutter], key=lambda r: r.y)
-            for r in col1:
-                r.column = 1
-                r.order  = order_idx
-                order_idx += 1
-            for r in col2:
-                r.column = 2
-                r.order  = order_idx
-                order_idx += 1
+            if col1 and col2:
+                for r in col1: r.column = 1; r.order = order_idx; order_idx += 1
+                for r in col2: r.column = 2; r.order = order_idx; order_idx += 1
+            else:
+                for r in sorted(bodies, key=lambda r: r.y):
+                    r.column = 0; r.order = order_idx; order_idx += 1
         else:
             for r in sorted(bodies, key=lambda r: r.y):
-                r.column = 0
-                r.order  = order_idx
-                order_idx += 1
+                r.column = 0; r.order = order_idx; order_idx += 1
 
-        # Other types (unknown etc) interleaved by y
         for r in sorted(others, key=lambda r: r.y):
-            r.column = 0
-            r.order  = order_idx
-            order_idx += 1
-
-        # Pagenums last
+            r.column = 0; r.order = order_idx; order_idx += 1
         for r in sorted(pagenums, key=lambda r: r.y):
-            r.column = 0
-            r.order  = order_idx
-            order_idx += 1
+            r.column = 0; r.order = order_idx; order_idx += 1
 
         return regions
 
@@ -501,14 +474,18 @@ class RegionDetector:
         if y < self.HEADER_ZONE and h < 0.08 and w > 0.20:
             return "header", 0.88
 
-        # Page number: top zone, narrow, short
-        if y < self.HEADER_ZONE and h < 0.08 and w <= 0.20:
+        # Page number: top zone, very narrow, short
+        # w < 0.12 excludes margin annotations which are wider than a page number
+        if y < self.HEADER_ZONE and h < 0.08 and w < 0.12:
             return "pagenum", 0.82
 
         # Page number: bottom zone
         if y > self.FOOTER_ZONE and h < 0.06 and w < 0.30:
             return "pagenum", 0.85
 
+        # Footnote: lower page, moderate width
+        if y > self.FOOTNOTE_MIN and h < 0.20 and w > 0.3:
+            return "footnote", 0.72
 
         # Body text: main column area, or any region with readable density
         if text_density > 0.03:
@@ -553,9 +530,6 @@ class RegionDetector:
                     if j <= i or j in used:
                         continue
                     if ri.type != rj.type:
-                        continue
-                    # Never merge regions from different columns
-                    if ri.column != rj.column:
                         continue
                     xi1, xi2 = ri.x, ri.x + ri.w
                     xj1, xj2 = rj.x, rj.x + rj.w
